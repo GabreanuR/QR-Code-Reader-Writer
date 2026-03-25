@@ -39,13 +39,11 @@ def detect_qr_scale(image_path: str) -> int:
 
     return scale
 
-
 def scale_down(img_path: str, scale_factor: int) -> Image.Image:
     """Redimensionează imaginea la o scară mai mică folosind interpolare NEAREST."""
     with Image.open(img_path) as img:
         new_size = (img.width // scale_factor, img.height // scale_factor)
         return img.resize(new_size, Image.NEAREST)
-
 
 def get_pixel_binary_value(img: Image.Image, x: int, y: int) -> int:
     """Determină valoarea binară (1=Negru, 0=Alb) a unui pixel."""
@@ -56,7 +54,6 @@ def get_pixel_binary_value(img: Image.Image, x: int, y: int) -> int:
         return 1 if pixel < 128 else 0
     else:
         return 1 if sum(pixel[:3]) / 3 < 128 else 0
-
 
 def apply_format_bits(matrix: list, format_bits: str) -> list:
     """

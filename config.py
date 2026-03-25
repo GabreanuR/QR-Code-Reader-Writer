@@ -25,6 +25,16 @@ QR_CONFIG_HIGH = {
     6: (480, 172),
 }
 
+# Format -> Versiune: (Număr_Blocuri, Bytes_ECC_Per_Bloc)
+QR_BLOCK_CONFIG_HIGH = {
+    1: (1, 17),
+    2: (1, 28),
+    3: (2, 22),
+    4: (4, 16),
+    5: (4, 22),
+    6: (4, 28),
+}
+
 # ==========================================
 # 2. DATE PROTOCOL ȘI PADDING
 # ==========================================

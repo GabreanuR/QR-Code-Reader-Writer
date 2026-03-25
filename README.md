@@ -13,14 +13,12 @@
 
 **Scan Gogh** is a Python-based system that handles the complete lifecycle of a QR code. Unlike simple wrappers, this project implements the core logic of the QR standard, including Reed-Solomon error correction, mask optimization, and zig-zag bit extraction.
 
-
-
 ---
 
 ## Technical Workflow
 
 ### 1. The Art of Generation (Encoding)
-The transformation from a raw string to a printable PNG follows a strict 12-step pipeline:
+The transformation from a raw string to a printable PNG follows a strict 11-step pipeline:
 
 1. **Bitstream Conversion:** Input strings are converted into binary sequences.
 2. **Padding:** Application of initial and final sequences to meet standard length requirements.
@@ -50,6 +48,36 @@ To retrieve the data, the system reverses the encoding logic through image proce
 * **Pillow (PIL):** Used for matrix-to-image conversion and pixel-level analysis.
 * **NumPy:** For efficient matrix manipulations.
 * **ReedSolo:** To handle complex Error Correction Code (ECC) logic.
+
+---
+
+## Getting Started
+
+### Prerequisites
+Ensure you have Python 3 installed. Clone the repository and install the required dependencies:
+
+```bash
+git clone [https://github.com/GabreanuR/Scan-Gogh.git](https://github.com/GabreanuR/Scan-Gogh.git)
+cd Scan-Gogh
+pip install -r requirements.txt
+```
+
+### Running the Application
+The system features an interactive Command Line Interface (CLI). Start the engine by running:
+
+```bash
+python main.py
+```
+
+## 📂 Project Architecture
+
+The codebase is fully modularized, adhering to Software Engineering principles (Separation of Concerns, DRY):
+
+* `main.py` - The CLI orchestrator and entry point.
+* `encoder.py` - Core logic for generating, error-correcting, and masking QR matrices.
+* `decoder.py` - Image processing, de-masking, and bitstream decoding.
+* `utils.py` - Shared utilities (image scaling, reserved pattern detection).
+* `config.py` - Centralized ISO standard constants (BCH polynomials, alignment coordinates, capacities).
 
 ---
 

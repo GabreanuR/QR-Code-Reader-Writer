@@ -1,654 +1,470 @@
 import numpy as np
 from PIL import Image
 import reedsolo
+import copy
+import itertools
 
-from config import QR_BIT_LENGTHS, QR_MATRIX_SIZES
-from utils import is_reserved_area
+from config import BCH_POLYNOMIAL, FORMAT_XOR_MASK, ECC_LEVEL_HIGH, QR_CONFIG_HIGH, PADDING_BYTES, QR_BLOCK_CONFIG_HIGH, QR_MATRIX_SIZES, ALIGNMENT_PATTERN_COORDS
+from utils import is_reserved_area, apply_format_bits
 
-def generate_format_string(mask_id):
+def generate_format_string(mask_id: int) -> str:
     """
     Generează șirul de 15 biți pentru Format Information.
-    Include nivelul de eroare (High - '10'), ID-ul măștii și codul BCH(15, 5).
+    Include nivelul de eroare, ID-ul măștii și codul BCH(15, 5).
     """
-    ecc_level = "10"  # Hardcodat pentru nivelul H (High)
     mask_bin = f"{mask_id:03b}"
-    format_bits = ecc_level + mask_bin
+    format_bits = ECC_LEVEL_HIGH + mask_bin
 
-    # Polinom generator pentru BCH (15, 5): x^10 + x^8 + x^5 + x^4 + x^2 + x + 1
-    generator = 0b10100110111
-
-    # Facem spațiu (shiftare cu 10 biți) pentru a adăuga restul BCH
+    # Facem spațiu (shift cu 10 biți) pentru a adăuga restul BCH
     info = int(format_bits, 2) << 10
 
-    # Calculăm restul împărțirii polinomiale
-    for i in range(5):  # Avem exact 5 biți în format_bits
+    # Calculăm restul împărțirii polinomiale (folosind polinomul din config)
+    for i in range(5):
         if info & (1 << (14 - i)):
-            info ^= generator << (4 - i)
+            info ^= BCH_POLYNOMIAL << (4 - i)
 
     bch_bits = info & 0b1111111111
 
-    # Combinăm biții și aplicăm XOR cu masca standard QR pentru zona de format
-    final_format = (int(format_bits, 2) << 10 | bch_bits) ^ 0b101010000010010
+    # Combinăm biții și aplicăm XOR cu masca standard din config
+    final_format = (int(format_bits, 2) << 10 | bch_bits) ^ FORMAT_XOR_MASK
 
     return f"{final_format:015b}"
 
-def generate_ecc_for_block(data_bits, ecc_capacity):
+def generate_ecc_for_block(data_bits: str, ecc_capacity: int) -> str:
     """
     Generează biții de Error Correction (ECC) pentru un bloc de date
     folosind algoritmul Reed-Solomon.
     """
-    # Inițializăm codecul cu numărul de bytes de corecție necesari
     rs = reedsolo.RSCodec(ecc_capacity)
 
-    # Convertim string-ul de biți ('10101010...') într-un bytearray nativ Python
     data_bytes = bytearray(int(data_bits[i:i + 8], 2) for i in range(0, len(data_bits), 8))
-
-    # rs.encode returnează [Date Originale + Biți ECC]
     encoded_data = rs.encode(data_bytes)
-
-    # Extragem strict partea de ECC de la final
     ecc_bytes = encoded_data[len(data_bytes):]
 
-    # Convertim bytearray-ul înapoi într-un șir de biți formatat cu 0-uri în față
     return "".join(format(byte, '08b') for byte in ecc_bytes)
 
-def apply_mask(qr_matrix, mask_matrix, data_matrix):
+def apply_mask(qr_matrix: list, mask_matrix: list, data_matrix: list) -> list:
+    """Aplică masca peste matricea de date folosind XOR, ignorând zonele rezervate."""
     size = len(qr_matrix)
 
     for row in range(size):
         for col in range(size):
             if mask_matrix[row][col] is not None:
-                # Aplicăm XOR (^) între datele originale și mască
                 qr_matrix[row][col] = data_matrix[row][col] ^ mask_matrix[row][col]
 
     return qr_matrix
 
-def write_zigzag_data(qr_matrix, bitstream, version):
+def write_zigzag_data(qr_matrix: list, bitstream: str, version: int) -> list:
+    """Populează matricea QR cu șirul de biți, urmărind traseul standard în zigzag."""
     size = len(qr_matrix)
     bit_index = 0
     bitstream_length = len(bitstream)
     going_up = True
-
-    # Pornim de la ultima coloană (dreapta-jos)
     col = size - 1
 
     while col > 0:
-        # Standardul QR: coloana 6 este rezervată
         if col == 6:
             col -= 1
 
-        # Generăm rândurile în funcție de direcție
         rows = range(size - 1, -1, -1) if going_up else range(size)
 
         for row in rows:
             for current_col in (col, col - 1):
-                # Dacă am scris toți biții, returnăm matricea
                 if bit_index == bitstream_length:
                     return qr_matrix
 
-                # Verificăm zonele
                 if not is_reserved_area(row, current_col, size, version):
                     qr_matrix[row][current_col] = int(bitstream[bit_index])
                     bit_index += 1
 
-        # Schimbăm direcția și trecem la următoarea bandă
         going_up = not going_up
         col -= 2
 
     return qr_matrix
 
-def save_matrix_as_png(qr_matrix, filename="output_qr.png", scale=10):
-    # 1. Convertim lista nativă Python într-un array NumPy pentru performanță
+def save_matrix_as_png(qr_matrix: list, filename: str = "output_qr.png", scale: int = 10) -> None:
+    """Transformă matricea binară într-o imagine PNG scalată."""
     matrix_array = np.array(qr_matrix, dtype=np.uint8)
-
-    # 2. Scalăm matricea: fiecare '1' sau '0' devine un bloc de (scale x scale)
-    # np.kron este excepțional de eficient aici, evitând buclele for
     scaled_matrix = np.kron(matrix_array, np.ones((scale, scale), dtype=np.uint8))
 
-    # 3. Maparea culorilor:
-    # În logica noastră: 1 = modul negru, 0 = modul alb.
-    # În standardul Pillow (modul 'L'): 0 = Negru absolut, 255 = Alb absolut.
-    pixel_values = (1 - scaled_matrix) * 255
+    # Maparea culorilor (0 -> 255, 1 -> 0)
+    # Folosim .astype(np.uint8) pentru a garanta formatul 8-bit
+    pixel_values = ((1 - scaled_matrix) * 255).astype(np.uint8)
 
-    # 4. Generarea și salvarea imaginii pe disc
+    # Generarea și salvarea imaginii pe disc
     Image.fromarray(pixel_values, mode="L").save(filename)
-
     print(f"\nImaginea QR a fost generată cu succes: '{filename}'")
 
+def determine_qr_version(text_length: int) -> int:
+    """
+    Calculează cea mai mică versiune QR capabilă să stocheze mesajul.
+    Modul Byte folosește: 4 biți (Mod) + 8 biți (Lungime) + 8 biți/caracter.
+    """
+    required_bits = 4 + 8 + (text_length * 8)
+
+    for version, (capacity_bits, _) in QR_CONFIG_HIGH.items():
+        # Verificăm dacă încap datele (lăsăm loc și pentru terminator, deși poate fi trunchiat)
+        if required_bits <= capacity_bits:
+            return version
+
+    raise ValueError("Textul este prea lung pentru Versiunea 6 (Nivel High).")
+
+def encode_text_to_bitstream(text: str, version: int) -> str:
+    """
+    Transformă textul într-un șir binar complet conform standardului QR:
+    [Mode Indicator] + [Character Count] + [Data] + [Terminator] + [Padding].
+    """
+    mode_indicator = "0100"  # 0100 reprezintă modul 'Byte'
+    char_count = f"{len(text):08b}"  # Convertim lungimea în binar pe 8 biți
+
+    # Transformăm fiecare caracter direct într-un șir binar de 8 biți
+    data_bits = "".join(f"{ord(c):08b}" for c in text)
+
+    bitstream = mode_indicator + char_count + data_bits
+
+    capacity_bits = QR_CONFIG_HIGH[version][0]
+
+    # Adăugăm terminatorul (maxim 4 zerouri, dar limitat de capacitatea rămasă)
+    remaining_bits = capacity_bits - len(bitstream)
+    terminator_length = min(4, remaining_bits)
+    if terminator_length > 0:
+        bitstream += "0" * terminator_length
+
+    # Bit-padding: rotunjim la cel mai apropiat multiplu de 8 (un byte complet)
+    while len(bitstream) % 8 != 0:
+        bitstream += "0"
+
+    # Byte-padding: adăugăm biții alternanți 0xEC și 0x11 până umplem versiunea
+    pad_index = 0
+    while len(bitstream) < capacity_bits:
+        bitstream += PADDING_BYTES[pad_index % 2]
+        pad_index += 1
+
+    return bitstream
+
+def generate_interleaved_data(bitstream: str, version: int) -> str:
+    """
+    Împarte datele în blocuri, generează ECC și le 'interleaving' (întrețese)
+    conform standardului QR. Returnează șirul final gata de pus în matrice.
+    """
+    num_blocks, ecc_per_block = QR_BLOCK_CONFIG_HIGH[version]
+
+    # 1. Împărțim bitstream-ul în bytes (pachete de 8 biți)
+    data_bytes = [bitstream[i:i + 8] for i in range(0, len(bitstream), 8)]
+
+    # 2. Calculăm dimensiunea blocurilor
+    total_data_bytes = len(data_bytes)
+    base_size = total_data_bytes // num_blocks
+    num_long_blocks = total_data_bytes % num_blocks
+    num_short_blocks = num_blocks - num_long_blocks
+
+    # 3. Creăm blocurile de date și blocurile ECC
+    data_blocks = []
+    ecc_blocks = []
+    idx = 0
+
+    for i in range(num_blocks):
+        # Standardul spune că blocurile lungi sunt mereu plasate la final
+        block_size = base_size + 1 if i >= num_short_blocks else base_size
+
+        # Extragem datele pentru blocul curent
+        block_data = data_bytes[idx:idx + block_size]
+        data_blocks.append(block_data)
+        idx += block_size
+
+        # Generăm ECC pentru acest bloc
+        block_bitstream = "".join(block_data)
+        ecc_bitstream = generate_ecc_for_block(block_bitstream, ecc_per_block)
+
+        # Împărțim și ECC-ul în bytes
+        ecc_bytes = [ecc_bitstream[j:j + 8] for j in range(0, len(ecc_bitstream), 8)]
+        ecc_blocks.append(ecc_bytes)
+
+    # 4. Interleaving (Întrețeserea datelor)
+    interleaved = []
+
+    # A. Alternăm bytes de date (luăm byte-ul 'i' din fiecare bloc, dacă există)
+    max_data_len = base_size + 1
+    for i in range(max_data_len):
+        for block in data_blocks:
+            if i < len(block):
+                interleaved.append(block[i])
+
+    # B. Alternăm bytes de ECC (toate blocurile ECC au exact aceeași lungime)
+    for i in range(ecc_per_block):
+        for block in ecc_blocks:
+            interleaved.append(block[i])
+
+    # Unim totul într-un singur șir de biți
+    return "".join(interleaved)
+
+def draw_finder_pattern(matrix: list, row_offset: int, col_offset: int) -> None:
+    """Desenează un Finder Pattern (7x7) bazat pe distanța față de centru."""
+    for r in range(7):
+        for c in range(7):
+            # Calculăm distanța față de punctul central (3, 3) al pătratului
+            dist_r, dist_c = abs(r - 3), abs(c - 3)
+
+            # Pătratul negru exterior (dist == 3), inel alb (dist == 2), centru negru (dist <= 1)
+            is_black = max(dist_r, dist_c) != 2
+            matrix[row_offset + r][col_offset + c] = 1 if is_black else 0
+
+def draw_alignment_pattern(matrix: list, center_r: int, center_c: int) -> None:
+    """Desenează un Alignment Pattern (5x5) în jurul unui centru dat."""
+    for r in range(-2, 3):
+        for c in range(-2, 3):
+            dist_r, dist_c = abs(r), abs(c)
+            # Inelul negru exterior (dist == 2), inel alb (dist == 1), pixel central negru (dist == 0)
+            is_black = max(dist_r, dist_c) != 1
+            matrix[center_r + r][center_c + c] = 1 if is_black else 0
+
+def initialize_qr_matrix(version: int) -> list:
+    """
+    Creează o matrice QR goală (plină cu 0) și desenează tiparele fixe obligatorii:
+    Finder Patterns, Separatoare, Timing Patterns, Alignment Patterns și Dark Module.
+    """
+    # Preluăm dimensiunea din fișierul de configurare
+    size = QR_MATRIX_SIZES[version - 1]
+    matrix = [[0 for _ in range(size)] for _ in range(size)]
+
+    # 1. Timing Patterns (liniile punctate care unesc Finder Patterns)
+    for i in range(size):
+        matrix[6][i] = 1 if i % 2 == 0 else 0
+        matrix[i][6] = 1 if i % 2 == 0 else 0
+
+    # 2. Separatoare albe (zone de 8x8 în colțuri pentru a izola Finder-ele)
+    for i in range(8):
+        for j in range(8):
+            matrix[i][j] = 0  # Stânga-Sus
+            matrix[i][size - 8 + j] = 0  # Dreapta-Sus
+            matrix[size - 8 + i][j] = 0  # Stânga-Jos
+
+    # 3. Desenăm Finder Patterns
+    draw_finder_pattern(matrix, 0, 0)  # Stânga-Sus
+    draw_finder_pattern(matrix, 0, size - 7)  # Dreapta-Sus
+    draw_finder_pattern(matrix, size - 7, 0)  # Stânga-Jos
+
+    # 4. Alignment Patterns (dacă versiunea este >= 2)
+    # Refolosim lista elegantă pe care o aveam în config.py!
+    if version in ALIGNMENT_PATTERN_COORDS:
+        for r, c in ALIGNMENT_PATTERN_COORDS[version]:
+            draw_alignment_pattern(matrix, r, c)
+
+    # 5. Dark Module (Un singur pixel negru, fixat mereu la aceste coordonate)
+    matrix[size - 8][8] = 1
+
+    return matrix
+
+def generate_mask_matrix(size: int, version: int, mask_id: int) -> list:
+    """
+    Generează o matrice de mascare (0 sau 1) conform formulelor matematice
+    din standardul QR ISO/IEC 18004. Zonele rezervate primesc valoarea None.
+    """
+    # Spunem explicit că matricea conține elemente de tip (int sau None)
+    mask: list[list[int | None]] = [[0 for _ in range(size)] for _ in range(size)]
+
+    for r in range(size):
+        for c in range(size):
+            # Dacă e zonă rezervată, nu aplicăm masca pe acest pixel
+            if is_reserved_area(r, c, size, version):
+                mask[r][c] = None
+                continue
+
+            # Formulele matematice ISO pentru cele 8 măști standard
+            if mask_id == 0:
+                val = (r + c) % 2 == 0
+            elif mask_id == 1:
+                val = r % 2 == 0
+            elif mask_id == 2:
+                val = c % 3 == 0
+            elif mask_id == 3:
+                val = (r + c) % 3 == 0
+            elif mask_id == 4:
+                val = (r // 2 + c // 3) % 2 == 0
+            elif mask_id == 5:
+                val = ((r * c) % 2) + ((r * c) % 3) == 0
+            elif mask_id == 6:
+                val = (((r * c) % 2) + ((r * c) % 3)) % 2 == 0
+            elif mask_id == 7:
+                val = (((r + c) % 2) + ((r * c) % 3)) % 2 == 0
+            else:
+                val = False
+
+            mask[r][c] = int(val)
+
+    return mask
+
+def add_quiet_zone(matrix: list) -> list:
+    """Adaugă marginea albă obligatorie de 4 module (Quiet Zone) în jurul matricei."""
+    padded_matrix = []
+
+    # 4 rânduri complet albe sus
+    empty_row = [0] * (len(matrix) + 8)
+    for _ in range(4):
+        padded_matrix.append(empty_row.copy())
+
+    # Adăugăm 4 zerouri la stânga, rândul original, și 4 zerouri la dreapta
+    for row in matrix:
+        padded_matrix.append([0] * 4 + row + [0] * 4)
+
+    # 4 rânduri complet albe jos
+    for _ in range(4):
+        padded_matrix.append(empty_row.copy())
+
+    return padded_matrix
+
+def calculate_penalty_rule_1(matrix: list) -> int:
+    """Regula 1: 5 sau mai multe module consecutive de aceeași culoare (pe rânduri și coloane)."""
+    penalty = 0
+
+    # 1. Verificăm rândurile
+    for row in matrix:
+        for _, group in itertools.groupby(row):
+            length = len(list(group))
+            if length >= 5:
+                penalty += (length - 2)
+
+    # 2. Verificăm coloanele (transpunem matricea cu zip)
+    for col in zip(*matrix):
+        for _, group in itertools.groupby(col):
+            length = len(list(group))
+            if length >= 5:
+                penalty += (length - 2)
+
+    return penalty
+
+def calculate_penalty_rule_2(matrix: list) -> int:
+    """Regula 2: Blocuri de 2x2 module de aceeași culoare (penalizare 3 puncte per bloc)."""
+    penalty = 0
+    size = len(matrix)
+
+    for r in range(size - 1):
+        for c in range(size - 1):
+            # Python știe să evalueze lanțuri de egalități!
+            if matrix[r][c] == matrix[r][c + 1] == matrix[r + 1][c] == matrix[r + 1][c + 1]:
+                penalty += 3
+
+    return penalty
+
+def calculate_penalty_rule_3(padded_matrix: list) -> int:
+    """
+    Calculează Penalizarea #3: Secvențe care seamănă cu Finder Pattern-ul.
+    Caută '000010111010' și '010111010000' pe rânduri și coloane.
+    Notă: Matricea trebuie să includă deja 'Quiet Zone' (marginea de 4 module albe).
+    """
+    pattern1 = "000010111010"
+    pattern2 = "010111010000"
+    penalty_occurrences = 0
+
+    # 1. Căutare pe orizontală (rânduri)
+    for row in padded_matrix:
+        # Transformăm [0, 0, 1, 0, 1...] în '00101...'
+        row_str = "".join(map(str, row))
+        penalty_occurrences += row_str.count(pattern1)
+        penalty_occurrences += row_str.count(pattern2)
+
+    # 2. Căutare pe verticală (coloane)
+    # zip(*padded_matrix) ia fiecare coloană și o transformă într-un rând!
+    for col in zip(*padded_matrix):
+        col_str = "".join(map(str, col))
+        penalty_occurrences += col_str.count(pattern1)
+        penalty_occurrences += col_str.count(pattern2)
+
+    # Standardul dictează înmulțirea cu 40 pentru fiecare apariție
+    return penalty_occurrences * 40
+
+def calculate_penalty_rule_4(matrix: list) -> int:
+    """Regula 4: Proporția de module negre (penalizare de 10 pct la fiecare 5% deviație de la 50%)."""
+    total_modules = len(matrix) * len(matrix)
+
+    # Numărăm câți de '1' (module negre) sunt în toată matricea
+    dark_modules = sum(row.count(1) for row in matrix)
+
+    # Calculăm procentajul
+    percent_dark = (dark_modules / total_modules) * 100
+
+    # Aflăm abaterea față de 50%, și o împărțim în trepte de 5%
+    deviation = abs(percent_dark - 50)
+    penalty = int(deviation // 5) * 10
+
+    return penalty
+
+def calculate_total_penalty_score(matrix: list) -> int:
+    """Orchestratorul care adună toate cele 4 penalizări ISO."""
+    score = 0
+    score += calculate_penalty_rule_1(matrix)
+    score += calculate_penalty_rule_2(matrix)
+
+    # Pentru regula 3, creăm o copie cu Quiet Zone
+    padded_matrix = add_quiet_zone(matrix)
+    score += calculate_penalty_rule_3(padded_matrix)
+
+    score += calculate_penalty_rule_4(matrix)
+    return score
+
 def scriere_cod_qr():
-    print()
-    secv = input("Sirul de caractere ce doresti a transforma in cod QR: ")
-    secv = secv.strip()
+    print("\n--- Modul Generare QR ---")
+    text = input("Șirul de caractere pe care dorești să-l transformi: ").strip()
 
-    fisier = input("Fisiere de output: ")
-    while fisier.endswith(".png") == False or fisier[0] == ".":
-        print("Fisierul trebuie sa se termine cu \".png\" ")
-        fisier = input("Fisiere de output: ")
+    fisier = input("Numele fișierului de output (ex: qrcode.png): ").strip()
 
-    # din https://www.nayuki.io/page/creating-a-qr-code-step-by-step
+    while not fisier.endswith(".png") or fisier.startswith("."):
+        print("Eroare: Fișierul trebuie să aibă extensia '.png' și un nume valid.")
+        fisier = input("Numele fișierului de output: ").strip()
 
-    # Ce versiune sa folosim? (Error correction high)
+    # 1. Determinăm versiunea și facem encoding mesajul
+    try:
+        version = determine_qr_version(len(text))
+        print(f"Versiune detectată: {version} (Nivel ECC: High)")
+    except ValueError as e:
+        print(f"Eroare: {e}")
+        return
 
-    # Max V6
-    VE = [0, 9, 16, 26, 36, 46, 60]  # Capacitatile in functie de versiune
-    VECC = [0, 17, 28, 22, 16, 22, 28]  # ECC urile in functie de versiune
-    VnrB = [0, 1, 1, 2, 4, 4, 4]  # Numarul de blocuri in functie de versiune
-    VQRSize = [0, 21, 25, 29, 33, 37, 41]  # Marimea matricei QR in functie de versiune
+    bitstream = encode_text_to_bitstream(text, version)
 
-    # 1. Create data segment
-    secv = list(secv)
-    for i in range(len(secv)):
-        # tranformam fiecare caracter in cod ascii
-        secv[i] = ord(secv[i])
-        # transformam fiecare cod ascii in binar
-        secv[i] = bin(secv[i])
+    # 2. Împărțirea pe blocuri, generarea ECC și Interleaving
+    final_bitstream = generate_interleaved_data(bitstream, version)
 
-    # 2.Fit to version number
-    # Segment 0 count
-    segmlen = len(secv)
-    segmlen = bin(segmlen)
+    # 3. Construirea Matricei și Adăugarea Tiparelor Fixe
+    qr_matrix = initialize_qr_matrix(version)
+    size = len(qr_matrix)
 
-    # 3. Concatenate segments, add padding, make codewords
-    Segment_0_mode = "0100"  # corespunde modului byte
-    segmlen = str(segmlen)
-    segmlen = segmlen[2:]
-    while len(segmlen) < 8:
-        segmlen = "0" + segmlen
+    # 4. Scriem datele (zigzag) în matrice
+    qr_matrix_with_data = write_zigzag_data(qr_matrix, final_bitstream, version)
 
-    Segment_0_data = ""
+    # 5. Aplicarea măștilor și găsirea celei mai bune
+    min_puncte = float('inf')
+    masca_potrivita = 0
+    best_final_matrix = []
 
-    for i in secv:
-        aux = str(i)
-        aux = aux[2:]
-        aux = aux.zfill(8)
-        Segment_0_data = Segment_0_data + aux
+    print("Evaluăm măștile pentru cel mai bun contrast...")
 
-    terminator = "0000"
-
-    nr_pana_acum = Segment_0_mode + segmlen + Segment_0_data + terminator
-
-    aux = len(nr_pana_acum)
-    while aux % 8 != 0:
-        nr_pana_acum += "0"
-        aux = len(nr_pana_acum)
-        print("DA")
-
-    aux = aux // 8  # nr de caractere curente
-
-    for i in range(len(VE)):
-        if aux > VE[i]:
-            vs = i
-        else:
-            vs = i
-            break
-
-    capacitate = VE[vs]
-    Byte_padding = capacitate - aux
-
-    auxEC = "11101100"
-    aux11 = "00010001"
-
-    while Byte_padding != 0:
-        nr_pana_acum += auxEC
-        Byte_padding -= 1
-        if Byte_padding == 0:
-            break
-        nr_pana_acum += aux11
-        Byte_padding -= 1
-
-    # 4. Split blocks, add ECC, interleave
-
-    nrBlocuri = VnrB[vs]
-
-    nrDataCodeWords = len(nr_pana_acum) // 8
-    dataCdWdperLB = nrDataCodeWords // 4 + 1  # Data codewords per long block
-
-    if nrDataCodeWords % nrBlocuri != 0:
-        dataCdWdperLB = nrDataCodeWords // nrBlocuri + 1  # Data codewords per long block
-        dataCdWdperSB = dataCdWdperLB - 1  # Data codewords per short block
-    else:
-        dataCdWdperLB = nrDataCodeWords // nrBlocuri  # Data codewords per long block
-        dataCdWdperSB = dataCdWdperLB
-
-    aux = nrDataCodeWords % nrBlocuri
-    if aux == 0:
-        nrLB = nrBlocuri  # Nr Long Blocks
-        nrSB = 0  # Nr Short Blocks
-        copnrLB = nrLB
-        copnrSB = nrSB
-    else:
-        nrLB = aux
-        copnrLB = nrLB
-        nrSB = nrBlocuri - aux
-        copnrSB = nrSB
-
-    nr_pana_acum = list(nr_pana_acum)
-
-    for i in range(0, len(nr_pana_acum), 8):
-        nr_pana_acum[i] = "".join(nr_pana_acum[i:i + 8])
-
-    while "0" in nr_pana_acum:
-        nr_pana_acum.remove("0")
-    while "1" in nr_pana_acum:
-        nr_pana_acum.remove("1")
-
-    M = []  # matricea in care stocam datele
-
-    for i in range(len(nr_pana_acum)):
-        M.append(nr_pana_acum[i])
-
-    i = 0
-    while copnrSB != 0:
-        x = "".join(M[i:i + dataCdWdperSB])
-        M[i:i + dataCdWdperSB] = [x]
-        i += 1
-        copnrSB -= 1
-    while copnrLB != 0:
-        x = "".join(M[i:i + dataCdWdperLB])
-        M[i:i + dataCdWdperLB] = [x]
-        i += 1
-        copnrLB -= 1
-
-    for i in range(len(M)):
-        M[i] = [M[i], []]
-
-    generare_ecc(M, VECC[vs])
-
-    for i in range(len(M)):
-        for j in range(0, len(M[i])):
-            M[i][j] = list(M[i][j])
-            for k in range(0, len(M[i][j]), 8):
-                M[i][j][k] = "".join(M[i][j][k:k + 8])
-            while "0" in M[i][j]:
-                M[i][j].remove("0")
-            while "1" in M[i][j]:
-                M[i][j].remove("1")
-
-    M2 = []  # Matricea cu elementele reasezate
-
-    copnrLB = nrLB
-    copnrSB = nrSB - 1
-
-    if dataCdWdperLB != dataCdWdperSB:
-        while copnrSB != -1:
-            M[copnrSB][0].append(None)
-            copnrSB -= 1
-
-    for i in range(0, len(M)):
-        M[i] = M[i][0] + M[i][1]
-
-    M2 = [[M[j][i] for j in range(len(M))] for i in range(len(M[0]))]
-
-    for i in range(len(M2)):
-        while None in M2[i]:
-            M2[i].remove(None)
-
-    M3 = [elem for linie in M2 for elem in linie]  # Lista cu elemente
-    M3 = "".join(M3)
-    M3 = list(M3)
-    for i in range(len(M3)):
-        M3[i] = int(M3[i])
-
-    # 5. Draw fixed patterns
-
-    QR = [[0 for _ in range(VQRSize[vs])] for _ in range(VQRSize[vs])]
-
-    for i in range(VQRSize[vs]):
-        if i % 2 == 0:
-            QR[i][6] = 1
-            QR[6][i] = 1
-
-    # Coltul stanga sus
-
-    for i in range(8):
-        for j in range(8):
-            QR[i][j] = 0
-
-    for i in range(7):
-        for j in range(7):
-            QR[i][j] = 1
-
-    for i in range(1, 6):
-        for j in range(1, 6):
-            QR[i][j] = 0
-
-    for i in range(2, 5):
-        for j in range(2, 5):
-            QR[i][j] = 1
-
-    # Coltul dreapta sus
-
-    aux = len(QR)
-
-    for i in range(8):
-        for j in range(aux - 8, aux):
-            QR[i][j] = 0
-
-    for i in range(7):
-        for j in range(aux - 7, aux):
-            QR[i][j] = 1
-
-    for i in range(1, 6):
-        for j in range(aux - 6, aux - 1):
-            QR[i][j] = 0
-
-    for i in range(2, 5):
-        for j in range(aux - 5, aux - 2):
-            QR[i][j] = 1
-
-    # Coltul stanga jos
-
-    for i in range(aux - 8, aux):
-        for j in range(8):
-            QR[i][j] = 0
-
-    for i in range(aux - 7, aux):
-        for j in range(7):
-            QR[i][j] = 1
-
-    for i in range(aux - 6, aux - 1):
-        for j in range(1, 6):
-            QR[i][j] = 0
-
-    for i in range(aux - 5, aux - 2):
-        for j in range(2, 5):
-            QR[i][j] = 1
-
-    # patrat dreapta jos
-
-    if vs >= 2:
-        for i in range(aux - 9, aux - 4):
-            for j in range(aux - 9, aux - 4):
-                QR[i][j] = 1
-
-        for i in range(aux - 8, aux - 5):
-            for j in range(aux - 8, aux - 5):
-                QR[i][j] = 0
-
-        QR[aux - 7][aux - 7] = 1
-
-    QR[aux - 8][8] = 1
-    # 6. Draw codewords and remainder
-
-    QR = write_zigzag_data(QR, M3)
-    # for linie in QR:
-    # print(*QR)
-
-    # 7. Try applying each mask
-
-    Lista_masti = [[], [], [], [], [], [], [], []]
-    for i in range(len(Lista_masti)):
-        Lista_masti[i] = [[0 for _ in range(VQRSize[vs])] for _ in range(VQRSize[vs])]
-
-        for j in range(VQRSize[vs]):
-            Lista_masti[i][j][6] = None
-            Lista_masti[i][6][j] = None
-
-        # Coltul stanga sus
-
-        for j in range(9):
-            for k in range(9):
-                Lista_masti[i][j][k] = None
-
-        # Coltul dreapta sus
-
-        aux = len(Lista_masti[i])
-
-        for j in range(9):
-            for k in range(aux - 8, aux):
-                Lista_masti[i][j][k] = None
-
-        # Coltul stanga jos
-
-        for j in range(aux - 8, aux):
-            for k in range(9):
-                Lista_masti[i][j][k] = None
-
-        # patrat dreapta jos
-
-        if vs >= 2:
-            for j in range(aux - 9, aux - 4):
-                for k in range(aux - 9, aux - 4):
-                    Lista_masti[i][j][k] = None
-
-    # MASCA 0
-
-    for i in range(len(Lista_masti[0])):
-        for j in range(len(Lista_masti[0][i])):
-            if Lista_masti[0][i][j] != None:
-                if (i + j) % 2 == 0:
-                    Lista_masti[0][i][j] = 1
-
-    # MASCA 1
-
-    for i in range(len(Lista_masti[1])):
-        for j in range(len(Lista_masti[1][i])):
-            if Lista_masti[1][i][j] != None:
-                if i % 2 == 0:
-                    Lista_masti[1][i][j] = 1
-
-    # MASCA 2
-
-    for i in range(len(Lista_masti[2])):
-        for j in range(len(Lista_masti[2][i])):
-            if Lista_masti[2][i][j] != None:
-                if j % 3 == 0:
-                    Lista_masti[2][i][j] = 1
-
-    # MASCA 3
-
-    for i in range(len(Lista_masti[3])):
-        for j in range(len(Lista_masti[3][i])):
-            if Lista_masti[3][i][j] != None:
-                if (i + j) % 3 == 0:
-                    Lista_masti[3][i][j] = 1
-
-    # MASCA 4
-
-    for i in range(len(Lista_masti[4])):
-        for j in range(len(Lista_masti[4][i])):
-            if Lista_masti[4][i][j] != None:
-                if (
-                        ((i % 4 == 0 or i % 4 == 1) and (j % 6 == 0 or j % 6 == 1 or j % 6 == 2))
-                        or
-                        ((i % 4 == 2 or i % 4 == 3) and (j % 6 == 3 or j % 6 == 4 or j % 6 == 5))
-                ):
-                    Lista_masti[4][i][j] = 1
-
-    # MASCA 5
-
-    for i in range(len(Lista_masti[5])):
-        for j in range(len(Lista_masti[5][i])):
-            if Lista_masti[5][i][j] != None:
-                if (
-                        ((i % 6 == 0) or (j % 6 == 0))
-                        or
-                        (i % 2 == 0 and (j - 3) % 6 == 0)
-                        or
-                        (j % 2 == 0 and (i - 3) % 6 == 0)
-                ):
-                    Lista_masti[5][i][j] = 1
-
-    # MASCA 6
-
-    for i in range(len(Lista_masti[6])):
-        for j in range(len(Lista_masti[6][i])):
-            if Lista_masti[6][i][j] != None:
-                if (
-                        ((i % 6 == 0) or (j % 6 == 0))
-                        or
-                        (i % 2 == 0 and (j - 3) % 6 == 0)
-                        or
-                        (j % 2 == 0 and (i - 3) % 6 == 0)
-                        or
-                        ((i + j + 3) % 6 == 0)
-                        or
-                        ((i + 1) % 6 == 0 and (j + 1) % 6 == 0)
-                        or
-                        ((i - 1) % 6 == 0 and (j - 1) % 6 == 0)
-                        or
-                        ((i - 4) % 6 == 0 and (j - 2) % 6 == 0)
-                        or
-                        ((i - 2) % 6 == 0 and (j - 4) % 6 == 0)
-
-                ):
-                    Lista_masti[6][i][j] = 1
-
-    # MASCA 7
-
-    for i in range(len(Lista_masti[7])):
-        for j in range(len(Lista_masti[7][i])):
-            if Lista_masti[7][i][j] != None:
-                if (
-                        ((i + j) % 6 == 0)
-                        or
-                        ((i - j - 2) % 6 == 0)
-                        or
-                        ((i - j + 2) % 6 == 0)
-                        or
-                        ((i - j - 3) % 6 == 0 and (i % 3) != 0)
-                ):
-                    Lista_masti[7][i][j] = 1
-
-    min_puncte = 100000
-    min_puncte = 1000000
-    # verificam criteriile pentru alegerea mastii
-    cop_QR = [[0 for _ in range(VQRSize[vs])] for _ in range(VQRSize[vs])]
-    for i in range(VQRSize[vs]):
-        for j in range(VQRSize[vs]):
-            cop_QR[i][j] = QR[i][j]
     for m in range(8):
+        # Facem o copie curată a matricei brute pe care să testăm
+        test_matrix = copy.deepcopy(qr_matrix_with_data)
 
-        QR = apply_mask(QR, Lista_masti[m], cop_QR)
+        # Generăm și aplicăm masca 'm'
+        mask_matrix = generate_mask_matrix(size, version, m)
+        test_matrix = apply_mask(test_matrix, mask_matrix, qr_matrix_with_data)
 
-        masca = m
+        # Adăugăm biții de format pentru această mască specifică
+        format_bits = generate_format_string(m)
+        test_matrix = apply_format_bits(test_matrix, format_bits)
 
-        biti = creare_format(masca)
+        # Calculăm punctajul total folosind orchestratorul nostru curat
+        score = calculate_total_penalty_score(test_matrix)
 
-        QR = format_in_qr(QR, biti)
-
-        puncte_secvente = 0
-        nr = 0  # nr secvente total
-        secv_act = 1
-        secv_act_1 = 1
-        for i in range(VQRSize[vs]):
-            secv_act = 1
-            secv_act_1 = 1
-            for j in range(1, VQRSize[vs]):
-                # pentru orizontala
-                if QR[i][j] == QR[i][j - 1]:
-                    secv_act += 1
-                else:
-                    if secv_act >= 5:
-                        puncte_secvente += (secv_act - 2)
-                        nr += 1
-                    secv_act = 1
-                # paralel pentru verticala
-                if QR[j][i] == QR[j - 1][i]:
-                    secv_act_1 += 1
-                else:
-                    if secv_act_1 >= 5:
-                        puncte_secvente += (secv_act_1 - 2)
-                        nr += 1
-                    secv_act_1 = 1
-
-            if secv_act >= 5:
-                puncte_secvente += (secv_act - 2)
-                nr += 1
-            if secv_act_1 >= 5:
-                puncte_secvente += (secv_act_1 - 2)
-                nr += 1
-
-        nr_boxuri = 0
-        for i in range(VQRSize[vs] - 1):
-            for j in range(VQRSize[vs] - 1):
-                if QR[i][j] == QR[i + 1][j + 1] and QR[i + 1][j] == QR[i][j + 1] and QR[i][j] == QR[i][j + 1]:
-                    nr_boxuri += 1
-        nr_boxuri = nr_boxuri * 3
-
-        copie_qr = [[0 for _ in range((VQRSize[vs] + 8))] for _ in range((VQRSize[vs] + 8))]
-        for i in range(VQRSize[vs]):
-            for j in range(VQRSize[vs]):
-                copie_qr[i + 4][j + 4] = QR[i][j]
-
-        finding_pat = 0
-        for i in range((VQRSize[vs] + 4)):
-            for j in range((VQRSize[vs] - 3)):
-                # 0 0 0 0 1 0 1 1 1 0 1 0 - pattern
-
-                # pe linie
-                if copie_qr[i][j] == 0 and copie_qr[i][j + 1] == 0 and copie_qr[i][j + 2] == 0 and copie_qr[i][
-                    j + 3] == 0 and copie_qr[i][j + 4] == 1 and copie_qr[i][j + 5] == 0 and copie_qr[i][j + 6] == 1 and \
-                        copie_qr[i][j + 7] == 1 and copie_qr[i][j + 8] == 1 and copie_qr[i][j + 9] == 0 and copie_qr[i][
-                    j + 10] == 1 and copie_qr[i][j + 11] == 0:
-                    finding_pat += 1
-
-
-                elif copie_qr[i][j] == 0 and copie_qr[i][j + 1] == 1 and copie_qr[i][j + 2] == 0 and copie_qr[i][
-                    j + 3] == 1 and copie_qr[i][j + 4] == 1 and copie_qr[i][j + 5] == 1 and copie_qr[i][j + 6] == 0 and \
-                        copie_qr[i][j + 7] == 1 and copie_qr[i][j + 8] == 0 and copie_qr[i][j + 9] == 0 and copie_qr[i][
-                    j + 10] == 0 and copie_qr[i][j + 11] == 0:
-                    finding_pat += 1
-
-                ###pe coloana
-                if copie_qr[j][i] == 0 and copie_qr[j + 1][i] == 0 and copie_qr[j + 2][i] == 0 and copie_qr[j + 3][
-                    i] == 0 and copie_qr[j + 4][i] == 1 and copie_qr[j + 5][i] == 0 and copie_qr[j + 6][i] == 1 and \
-                        copie_qr[j + 7][i] == 1 and copie_qr[j + 8][i] == 1 and copie_qr[j + 9][i] == 0 and \
-                        copie_qr[j + 10][i] == 1 and copie_qr[j + 11][i] == 0:
-                    finding_pat += 1
-
-                elif copie_qr[j][i] == 0 and copie_qr[j + 1][i] == 1 and copie_qr[j + 2][i] == 0 and copie_qr[j + 3][
-                    i] == 1 and copie_qr[j + 4][i] == 1 and copie_qr[j + 5][i] == 1 and copie_qr[j + 6][i] == 0 and \
-                        copie_qr[j + 7][i] == 1 and copie_qr[j + 8][i] == 0 and copie_qr[j + 9][i] == 0 and \
-                        copie_qr[j + 10][i] == 0 and copie_qr[j + 11][i] == 0:
-                    finding_pat += 1
-        finding_pat *= 40
-
-        nr_1 = 0
-        nr_0 = 1
-        for i in range(VQRSize[vs]):
-            for j in range(VQRSize[vs]):
-                if QR[i][j] == 1:
-                    nr_1 += 1
-        dim_total = VQRSize[vs] ** 2
-
-        proportie_biti_1 = 100 * float(nr_1) / float(dim_total)
-        if proportie_biti_1 > 45 and proportie_biti_1 < 55:
-            pct_prop = 0
-        elif proportie_biti_1 >= 40 and proportie_biti_1 <= 60:
-            pct_prop = 10
-        elif proportie_biti_1 >= 35 and proportie_biti_1 <= 65:
-            pct_prop = 20
-        elif proportie_biti_1 >= 30 and proportie_biti_1 <= 70:
-            pct_prop = 30
-        elif proportie_biti_1 >= 25 and proportie_biti_1 <= 75:
-            pct_prop = 40
-        elif proportie_biti_1 >= 20 and proportie_biti_1 <= 80:
-            pct_prop = 50
-        elif proportie_biti_1 >= 15 and proportie_biti_1 <= 85:
-            pct_prop = 60
-        elif proportie_biti_1 >= 10 and proportie_biti_1 <= 90:
-            pct_prop = 70
-        elif proportie_biti_1 >= 5 and proportie_biti_1 <= 95:
-            pct_prop = 80
-        elif proportie_biti_1 >= 0 and proportie_biti_1 <= 100:
-            pct_prop = 90
-
-        total_puncte = puncte_secvente + nr_boxuri + finding_pat + pct_prop
-        # am aflat punctele per masca, o alegem daca e buna in momentul actual
-        if min_puncte > total_puncte:
-            min_puncte = total_puncte
+        # Salvăm cea mai bună mască
+        if score < min_puncte:
+            min_puncte = score
             masca_potrivita = m
+            best_final_matrix = copy.deepcopy(test_matrix)
 
-    QR = apply_mask(cop_QR, Lista_masti[masca_potrivita], cop_QR)
+    print(f"Masca câștigătoare este Masca {masca_potrivita} (Scor Penalizare: {min_puncte})")
 
-    masca = masca_potrivita
+    # 6. Crearea imaginii finale
+    # Adăugăm marginea albă (Quiet Zone) necesară pentru scanare
+    final_image_matrix = add_quiet_zone(best_final_matrix)
 
-    biti = creare_format(masca)
-
-    QR = format_in_qr(QR, biti)
-
-    save_matrix_as_png(QR, fisier, 20)
-
-    return
-
+    # Salvăm imaginea scalată de 20 de ori pentru claritate maximă
+    save_matrix_as_png(final_image_matrix, fisier, scale=20)
