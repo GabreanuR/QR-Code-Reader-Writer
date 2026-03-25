@@ -1,80 +1,74 @@
-# **QR Project - Scan Gogh**
+# Scan Gogh - QR Code Generator & Reader
 
-## **Team**
-- **Gabreanu Răzvan-George** - Group 134, Series 13
-- **Săpunaru Maia** - Group 134, Series 13
-- **Mocanu Ruxandra-Ioana** - Group 134, Series 13
+> A high-fidelity QR code engine built from scratch, capable of encoding strings into visual matrices and decoding images back into data. Named in honor of the art of encoding.
 
----
-
-## **Description**
-This project implements a system for generating and reading QR codes. The main menu offers two core functionalities:
-1. **Generating a QR code**
-2. **Reading a QR code**
+**Authors & Contributors:** 
+* **Răzvan** - [@GabreanuR](https://github.com/GabreanuR)
+* **Maia** - [@maia-sapunaru](https://github.com/maia-sapunaru)
+* **Ruxi** - [@rmig22](https://github.com/rmig22)
 
 ---
 
-## **Generating a QR Code**
-The QR code generation process follows these steps:
+## Project Overview
 
-1. Take the input character string from the user.
-2. Convert the string into a binary sequence.
-3. Apply the initial and final sequences to the binary string.
-4. Split the binary string into blocks based on the number of characters.
-5. Add error correction codes (**ECC - Error Correction Code**).
-6. Rearrange bits according to the QR code structure.
-7. Create a QR matrix (using `0` and `1`, corresponding to white and black colors).
-8. Apply the necessary QR format, adding reserved corners and lines.
-9. Insert the bit sequence into the QR matrix.
-10. Apply the 8 possible masks and select the optimal one based on optimization criteria.
-11. Apply the final formatting.
-12. Convert the QR matrix into a **PNG** file.
+**Scan Gogh** is a Python-based system that handles the complete lifecycle of a QR code. Unlike simple wrappers, this project implements the core logic of the QR standard, including Reed-Solomon error correction, mask optimization, and zig-zag bit extraction.
+
+
 
 ---
 
-## **Reading a QR Code**
-The QR code reading process includes the following steps:
+## Technical Workflow
 
-1. Resize the image to ensure each pixel can be accessed correctly.
-2. Convert the image into a matrix containing only `0` and `1` values (**black/white**).
-3. Identify the applied mask using decision bits.
-4. Determine the QR code version for correct decoding.
-5. Remove the applied mask.
-6. Extract bits in a **zig-zag** order to retrieve data.
-7. Convert the bit sequence into a final decoded **string**.
+### 1. The Art of Generation (Encoding)
+The transformation from a raw string to a printable PNG follows a strict 12-step pipeline:
 
----
+1. **Bitstream Conversion:** Input strings are converted into binary sequences.
+2. **Padding:** Application of initial and final sequences to meet standard length requirements.
+3. **Data Blocking:** Segregating the binary stream into blocks based on version capacity.
+4. **Error Correction (ECC):** Implementing **Reed-Solomon** codes to ensure data integrity even if the code is partially damaged.
+5. **Structural Mapping:** Rearranging bits to fit the physical QR architecture.
+6. **Matrix Initialization:** Creating a grid of `0`s and `1`s (binary representation of modules).
+7. **Reserved Patterns:** Placing position detection patterns (large squares), timing lines, and alignment markers.
+8. **Data Placement:** Inserting the bitstream into the available matrix space.
+9. **Masking & Optimization:** Applying all 8 standard QR masks. The system evaluates each outcome against penalty rules to select the mask with the least visual noise.
+10. **Final Formatting:** Applying format and version information bits.
+11. **Image Rendering:** Converting the mathematical matrix into a high-resolution **PNG** file using the Pillow library.
 
-## **References**
+### 2. The Art of Reading (Decoding)
+To retrieve the data, the system reverses the encoding logic through image processing:
 
-### **General QR Code Guidelines:**
-- [Creating a QR Code - Nayuki](https://www.nayuki.io/page/creating-a-qr-code-step-by-step)
-
-### **Generating PNG Files from a Binary Matrix:**
-- [Pillow - Convert to PNG](https://stackoverflow.com/questions/78913551/python-using-pillow-to-convert-any-format-to-png-any-way-to-speed-the-process)
-- [GeeksforGeeks - Convert Numpy to Image](https://www.geeksforgeeks.org/convert-a-numpy-array-to-an-image/)
-
-### **Generating Error Correction Codes (ECC):**
-- [Reed-Solomon Codec](https://pypi.org/project/reedsolo/#basic-usage-with-high-level-rscodec-class)
-
-### **QR Code Format Information:**
-- [QR Code Format and Version](https://www.thonky.com/qr-code-tutorial/format-version-information)
-
-### **Reading Image Pixels:**
-- [StackOverflow - RGB pixel values](https://stackoverflow.com/questions/138250/how-to-read-the-rgb-value-of-a-given-pixel-in-python)
-- [YouTube - Reading Image Pixels](https://www.youtube.com/watch?v=6Hk5KyiEktI)
-
-### **QR Code Structure and Data Formatting:**
-- [YouTube - Timing & Alignment Patterns](https://www.youtube.com/watch?v=pamazHwk0hg)
-- [GeeksforGeeks - Convert Binary to String](https://www.geeksforgeeks.org/convert-binary-to-string-using-python/)
-
-### **Finding the Optimal Mask for a QR Code:**
-- [Reddit - How to Read QR Codes](https://www.reddit.com/r/LearnUselessTalents/comments/esidvc/the_simplest_guide_to_read_qr_codes/)
-- [QR Mask Analysis Example](https://imgur.com/a/FvtpZ2o)
+* **Binarization:** Resizing the input image and converting pixels into a clean `0/1` matrix.
+* **Metadata Extraction:** Reading the format bits to identify which of the 8 masks was used.
+* **De-masking:** Reversing the XOR operation to reveal the underlying data.
+* **Zig-Zag Traversal:** Extracting bits in the specific non-linear order required by the QR standard.
+* **Binary Decoding:** Converting the extracted sequence back into a human-readable string.
 
 ---
 
-## **Video Explanation**
-[https://www.youtube.com/watch?v=NIO0ZfSSZ34](https://www.youtube.com/watch?v=NIO0ZfSSZ34)
+## Tech Stack & Libraries
+* **Python 3**
+* **Pillow (PIL):** Used for matrix-to-image conversion and pixel-level analysis.
+* **NumPy:** For efficient matrix manipulations.
+* **ReedSolo:** To handle complex Error Correction Code (ECC) logic.
 
 ---
+
+## Demo & Documentation
+Watch the system in action and see a detailed walkthrough of the implementation:  
+[**Project Video Explanation**](https://www.youtube.com/watch?v=NIO0ZfSSZ34)
+
+---
+
+## References & Resources
+
+### Core Logic
+* [Creating a QR Code Step-by-Step](https://www.nayuki.io/page/creating-a-qr-code-step-by-step) - The primary guide for this implementation.
+* [QR Code Tutorial: Format & Version](https://www.thonky.com/qr-code-tutorial/format-version-information)
+
+### ECC & Data Structures
+* [Reed-Solomon Codec Documentation](https://pypi.org/project/reedsolo/)
+* [Timing & Alignment Patterns Analysis](https://www.youtube.com/watch?v=pamazHwk0hg)
+
+### Image Processing
+* [Pillow: Binary Matrix to PNG](https://stackoverflow.com/questions/78913551/python-using-pillow-to-convert-any-format-to-png)
+* [RGB Pixel Value Extraction Guide](https://stackoverflow.com/questions/138250/how-to-read-the-rgb-value-of-a-given-pixel-in-python)

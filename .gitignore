@@ -1,0 +1,34 @@
+# ========================
+# Python Core
+# ========================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# ========================
+# Medii Virtuale (Virtual Envs)
+# ========================
+venv/
+env/
+.venv/
+
+# ========================
+# IDE-uri și Editoare de Text
+# ========================
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ========================
+# Fisiere specifice Sistemului de Operare
+# ========================
+.DS_Store
+Thumbs.db
+
+# ========================
+# Fisiere generate de Scan Gogh
+# ========================
+
+outputASC.png
+output_qr.png
