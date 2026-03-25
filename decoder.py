@@ -1,14 +1,11 @@
 import os
-from PIL import Image
 
-# Importăm din fișierele noastre:
-from config import QR_BIT_LENGTHS, QR_MATRIX_SIZES, QR_CONFIG_HIGH
+from config import QR_MATRIX_SIZES, QR_CONFIG_HIGH, PADDING_BYTES
 from utils import detect_qr_scale, scale_down, is_reserved_area
 
 def get_mask_id(matrix):
-    # Transformăm lista [1, 1, 0] în string-ul "110"
+    # Transformăm lista [1, 1, 0] în string-ul '110'
     bits_str = f"{matrix[8][2]}{matrix[8][3]}{matrix[8][4]}"
-
     # Valoarea binară complementară (formula din standardul QR)
     return 7 - int(bits_str, 2)
 
@@ -20,22 +17,14 @@ def remove_mask(matrix, mask_id, version):
             if not is_reserved_area(i, j, size, version):
                 apply = False
 
-                if mask_id == 0:
-                    apply = (j % 3 == 0)
-                elif mask_id == 1:
-                    apply = ((i + j) % 3 == 0)
-                elif mask_id == 2:
-                    apply = ((i + j) % 2 == 0)
-                elif mask_id == 3:
-                    apply = (i % 2 == 0)
-                elif mask_id == 4:
-                    apply = (((i * j) % 3 + i * j) % 2 == 0)
-                elif mask_id == 5:
-                    apply = (((i * j) % 3 + i + j) % 2 == 0)
-                elif mask_id == 6:
-                    apply = ((i // 2 + j // 3) % 2 == 0)
-                elif mask_id == 7:
-                    apply = (((i * j) % 2 + (i * j) % 3) == 0)
+                if mask_id == 0: apply = (j % 3 == 0)
+                elif mask_id == 1: apply = ((i + j) % 3 == 0)
+                elif mask_id == 2: apply = ((i + j) % 2 == 0)
+                elif mask_id == 3: apply = (i % 2 == 0)
+                elif mask_id == 4: apply = (((i * j) % 3 + i * j) % 2 == 0)
+                elif mask_id == 5: apply = (((i * j) % 3 + i + j) % 2 == 0)
+                elif mask_id == 6: apply = ((i // 2 + j // 3) % 2 == 0)
+                elif mask_id == 7: apply = (((i * j) % 2 + (i * j) % 3) == 0)
 
                 if apply:
                     matrix[i][j] ^= 1
@@ -45,7 +34,6 @@ def remove_mask(matrix, mask_id, version):
 def extract_qr_bits(matrix, size, version):
     qr_bits = []
     going_up = True
-
     col = size - 1
 
     while col > 0:
@@ -69,19 +57,10 @@ def extract_qr_bits(matrix, size, version):
     return "".join(map(str, qr_bits))
 
 def remove_ecc_and_get_version(bitstring):
-    # Format: versiune: (data_bits, total_bytes)
-    qr_config_high = {
-        1: (72, 26),
-        2: (128, 44),
-        3: (208, 70),
-        4: (288, 100),
-        5: (368, 134),
-        6: (480, 172),
-    }
-
     input_byte_count = len(bitstring) // 8
 
-    for version, (data_bits, total_bytes) in qr_config_high.items():
+    # Folosim constanta importată din config.py
+    for version, (data_bits, total_bytes) in QR_CONFIG_HIGH.items():
         if total_bytes == input_byte_count:
             # Returnăm biții de date și versiunea detectată
             return bitstring[:data_bits], version
@@ -109,12 +88,9 @@ def rearrange_qr_data(bitstream, version):
     for i, byte in enumerate(byte_list):
         # Caz particular pentru Versiunea 5 (distribuție asimetrică a bytes)
         if version == 5:
-            if i == 44:
-                blocks[2].append(byte)
-            elif i == 45:
-                blocks[3].append(byte)
-            else:
-                blocks[i % 4].append(byte)
+            if i == 44: blocks[2].append(byte)
+            elif i == 45: blocks[3].append(byte)
+            else: blocks[i % 4].append(byte)
         else:
             # Distribuție standard (Round Robin)
             blocks[i % num_blocks].append(byte)
@@ -123,33 +99,26 @@ def rearrange_qr_data(bitstream, version):
     return "".join("".join(block) for block in blocks)
 
 def decode_qr_message(bitstream):
-    # 1. Eliminăm padding-ul de la final (11101100 și 00010001)
     # Împărțim șirul în bytes (8 biți)
     bytes_list = [bitstream[i:i + 8] for i in range(0, len(bitstream), 8)]
 
-    # Cât timp ultimul byte din listă este un byte de padding, îl scoatem
-    while bytes_list and bytes_list[-1] in ("11101100", "00010001"):
+    # Folosim constanta importată din config.py
+    while bytes_list and bytes_list[-1] in PADDING_BYTES:
         bytes_list.pop()
 
     clean_bitstream = "".join(bytes_list)
 
-    # 2. Slicing direct pentru a elimina metadatele
-    # Structura QR pe care o curățăm este:
-    # [Mode: 4 biți] [Char Count: 8 biți] [Mesaj: X biți] [Terminator: 4 biți]
-
-    # Ne asigurăm- că avem suficientă lungime pentru a nu primi o eroare
+    # Ne asigurăm că avem suficientă lungime pentru a nu primi o eroare
     if len(clean_bitstream) >= 16:
         # Tăiem primii 12 biți (4 Mode + 8 Count) și ultimii 4 biți (Terminator)
         actual_data_bits = clean_bitstream[12:-4]
     else:
         return ""
 
-    # 3. Conversia finală din Binar în String
     # Împărțim biții rămași în caractere de 8 biți
     message_bytes = [actual_data_bits[i:i + 8] for i in range(0, len(actual_data_bits), 8)]
 
     # Folosim chr(int(b, 2)) pentru conversie, dar ignorăm resturile
-    # (ex: dacă rămân 2-3 biți de zero la final din cauza alinierii)
     decoded_message = "".join(chr(int(b, 2)) for b in message_bytes if len(b) == 8)
 
     print(decoded_message)
@@ -166,12 +135,16 @@ def citire_cod_qr():
     # 1. Preprocesare Imagine
     scale = detect_qr_scale(fisier)
     img_mica = scale_down(fisier, scale)
+
+    # Convertim obligatoriu la Grayscale ('L') pentru a nu primi tuples RGB (R, G, B)
+    img_mica = img_mica.convert("L")
+
     width, height = img_mica.size
-    pixels = list(img_mica.getdata())
+    pixels = img_mica.load()
 
     # Construire matrice binară
     qr_matrix = [
-        [0 if pixels[i * width + j] == 255 else 1 for j in range(width)]
+        [0 if pixels[j, i] > 128 else 1 for j in range(width)]
         for i in range(height)
     ]
 
@@ -179,7 +152,6 @@ def citire_cod_qr():
     try:
         version_index = QR_MATRIX_SIZES.index(height)
         version = version_index + 1
-        dim_versiune = QR_BIT_LENGTHS[version_index]
     except ValueError:
         print(f"Eroare: Dimensiunea matricei ({height}x{height}) este invalidă sau versiunea > 6.")
         return
@@ -188,8 +160,8 @@ def citire_cod_qr():
     mask_id = get_mask_id(qr_matrix)
     qr_matrix = remove_mask(qr_matrix, mask_id, version)
 
-    # 4. Extragere și Decodare Date
-    qr_bits = extract_qr_bits(qr_matrix, height, dim_versiune, version)
+    # 4. Extragere și Decodare Date (Am eliminat parametrul inutil)
+    qr_bits = extract_qr_bits(qr_matrix, height, version)
 
     data_bits, detected_version = remove_ecc_and_get_version(qr_bits)
 
